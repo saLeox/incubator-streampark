@@ -44,6 +44,8 @@ enum Api {
   SET_TEAM = '/user/setTeam',
   INIT_TEAM = '/user/initTeam',
   APP_OWNERS = '/user/appOwners',
+  TransferUserResource = '/user/transferResource',
+  SSO_TOKEN = '/sso/token',
 }
 
 /**
@@ -147,5 +149,18 @@ export function fetchSetUserTeam(data: { teamId: string }): Promise<TeamSetRespo
   return defHttp.post({
     url: Api.SET_TEAM,
     data,
+  });
+}
+
+export function transferUserResource(data: {
+  userId: string;
+  targetUserId: string;
+}): Promise<TeamSetResponse> {
+  return defHttp.put({ url: Api.TransferUserResource, data });
+}
+
+export function fetchSsoToken(): Promise<LoginResultModel> {
+  return defHttp.get({
+    url: Api.SSO_TOKEN,
   });
 }
