@@ -17,11 +17,19 @@
 
 package org.apache.streampark.console.system.service.impl;
 
+import org.apache.streampark.common.util.DateUtils;
 import org.apache.streampark.common.util.Utils;
+import org.apache.streampark.console.base.domain.ResponseCode;
 import org.apache.streampark.console.base.domain.RestRequest;
+import org.apache.streampark.console.base.domain.RestResponse;
 import org.apache.streampark.console.base.exception.ApiAlertException;
+import org.apache.streampark.console.base.properties.ShiroProperties;
 import org.apache.streampark.console.base.util.ShaHashUtils;
+import org.apache.streampark.console.base.util.WebUtils;
+import org.apache.streampark.console.core.service.ApplicationService;
+import org.apache.streampark.console.core.service.ResourceService;
 import org.apache.streampark.console.system.authentication.JWTToken;
+import org.apache.streampark.console.system.authentication.JWTUtil;
 import org.apache.streampark.console.system.entity.Team;
 import org.apache.streampark.console.system.entity.User;
 import org.apache.streampark.console.system.mapper.UserMapper;
@@ -30,6 +38,7 @@ import org.apache.streampark.console.system.service.MenuService;
 import org.apache.streampark.console.system.service.UserService;
 
 import org.apache.commons.collections.CollectionUtils;
+import org.apache.commons.lang3.RandomStringUtils;
 import org.apache.commons.lang3.StringUtils;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
@@ -44,6 +53,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import javax.annotation.Nullable;
 
+import java.time.LocalDateTime;
 import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
@@ -60,6 +70,12 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
   @Autowired private MemberService memberService;
 
   @Autowired private MenuService menuService;
+
+  @Autowired private ApplicationService applicationService;
+
+  @Autowired private ResourceService resourceService;
+
+  @Autowired private ShiroProperties shiroProperties;
 
   @Override
   public User findByName(String username) {
@@ -107,17 +123,24 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
 
   @Override
   @Transactional(rollbackFor = Exception.class)
-  public void updateUser(User user) {
+  public RestResponse updateUser(User user) {
+    User existsUser = getById(user.getUserId());
     user.setPassword(null);
     user.setModifyTime(new Date());
+    if (needTransferResource(existsUser, user)) {
+      return RestResponse.success(Collections.singletonMap("needTransferResource", true));
+    }
     updateById(user);
+    return RestResponse.success();
   }
 
-  @Override
-  @Transactional(rollbackFor = Exception.class)
-  public void deleteUser(Long userId) {
-    removeById(userId);
-    this.memberService.deleteByUserId(userId);
+  private boolean needTransferResource(User existsUser, User user) {
+    if (User.STATUS_LOCK.equals(existsUser.getStatus())
+        || User.STATUS_VALID.equals(user.getStatus())) {
+      return false;
+    }
+    return applicationService.existsByUserId(user.getUserId())
+        || resourceService.existsByUserId(user.getUserId());
   }
 
   @Override
@@ -247,5 +270,40 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
     userInfo.put("permissions", permissions);
 
     return userInfo;
+  }
+
+  @Override
+  @Transactional(rollbackFor = Exception.class)
+  public void transferResource(Long userId, Long targetUserId) {
+    applicationService.changeOwnership(userId, targetUserId);
+    resourceService.changeOwnership(userId, targetUserId);
+  }
+
+  @Override
+  public RestResponse getLoginUserInfo(User user) {
+    if (user == null) {
+      return RestResponse.success().put("code", 0);
+    }
+
+    if (User.STATUS_LOCK.equals(user.getStatus())) {
+      return RestResponse.success().put("code", 1);
+    }
+    // set team
+    fillInTeam(user);
+
+    // no team.
+    if (user.getLastTeamId() == null) {
+      return RestResponse.success().data(user.getUserId()).put("code", ResponseCode.CODE_FORBIDDEN);
+    }
+
+    updateLoginTime(user.getUsername());
+    String token = WebUtils.encryptToken(JWTUtil.sign(user.getUserId(), user.getUsername()));
+    LocalDateTime expireTime = LocalDateTime.now().plusSeconds(shiroProperties.getJwtTimeOut());
+    String expireTimeStr = DateUtils.formatFullTime(expireTime);
+    JWTToken jwtToken = new JWTToken(token, expireTimeStr);
+    String userId = RandomStringUtils.randomAlphanumeric(20);
+    user.setId(userId);
+    Map<String, Object> userInfo = generateFrontendUserInfo(user, user.getLastTeamId(), jwtToken);
+    return RestResponse.success(userInfo);
   }
 }
